@@ -1,8 +1,11 @@
-name: Generate and Deploy Docs
+name: Build and Push Docs
 
 on:
   push:
     branches: [ main ]
+
+permissions:
+  contents: write
 
 jobs:
   build-and-deploy:
@@ -10,35 +13,31 @@ jobs:
 
     steps:
     - name: Checkout source code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    - name: Install pdoc
-      run: pip install pdoc
+    - name: Install dependencies
+      run: pip install -e ".[docs]"
 
     - name: Generate documentation
-      run: pdoc sqbooster --output-dir docs --docformat google
+      run: make -C docs html
 
-    - name: Set up SSH for deploy key
+    - name: Deploy to docs branch
       run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_ed25519
-        chmod 600 ~/.ssh/id_ed25519
-        ssh-keyscan github.com >> ~/.ssh/known_hosts
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
 
-    - name: Push to sqbooster/docs
-      run: |
-        git config --global user.name "GitHub Action"
-        git config --global user.email "actions@github.com"
-        git clone git@github.com:sqbooster/docs.git out
-        rm -rf out/*
-        cp -r docs/* out/
-        cd out
+        git checkout --orphan docs
+
+        git rm -rf .
+
+        cp -r docs/_build/html/* .
         touch .nojekyll
+
         git add .
-        git commit -m "Update docs from sqbooster" || echo "No changes to commit"
-        git push
+        git commit -m "Update docs from ${{ github.sha }}" || echo "No changes to commit"
+        git push origin docs --force

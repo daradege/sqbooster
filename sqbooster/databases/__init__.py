@@ -1,10 +1,36 @@
 """
 Database backends for sqbooster.
 
-This module provides database backend implementations for the sqbooster
-key-value store library. Currently supports SQLite as the primary backend
-for persistent storage of key-value pairs with automatic JSON serialization.
+All backends implement the DatabaseBackend interface, making them
+fully interchangeable. Switch backends by changing only the constructor.
 
-The database backends handle the low-level storage operations while providing
-a consistent interface for the higher-level sqbooster API.
+Table-capable backends (recommended):
+    - SQLiteBackend       (sqbooster.backends)
+    - PostgreSQLBackend   (sqbooster.backends)
+    - JSONFileDatabase    (sqbooster.databases)
+    - PickleFileDatabase  (sqbooster.databases)
+    - RedisDatabase       (sqbooster.databases)
+    - MongoDatabase       (sqbooster.databases)
+
+Legacy wrappers (backward compatible key-value only):
+    - SQLiteDatabase      (delegates to SQLiteBackend)
+    - PostgreSQLDatabase  (delegates to PostgreSQLBackend)
 """
+
+from ..backends import DatabaseBackend
+from ..backends.sqlite import SQLiteBackend
+from ..backends.postgresql import PostgreSQLBackend
+from .sqlite import SQLiteDatabase
+from .postgresql import PostgreSQLDatabase
+from .jsonfile import JSONFileDatabase
+from .picklefile import PickleFileDatabase
+
+try:
+    from .redis import RedisDatabase
+except ImportError:
+    pass
+
+try:
+    from .mongo import MongoDatabase
+except ImportError:
+    pass

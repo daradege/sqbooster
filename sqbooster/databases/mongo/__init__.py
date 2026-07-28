@@ -1,191 +1,306 @@
 """
-This module provides a MongoDB database interface for storing and retrieving data.
-The MongoDatabase class provides methods to interact with a MongoDB database.
-It allows reading, writing, and deleting key-value pairs, as well as retrieving all keys.
+MongoDB database backend for sqbooster.
+
+Stores key-value pairs and table data in MongoDB collections.
+Supports the full DatabaseBackend interface with native MongoDB querying.
 """
 
-from ...exceptions import ConnectionError,DatabaseError,KeyNotFoundError,SerializationError
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List
 from datetime import datetime
-import json
+
+from ...exceptions import DatabaseError, DatabaseConnectionError
+from ...schema import Column, TableSchema
+from ...query import InMemoryQuery
+from ...types import Integer, Text, Float, Boolean, Blob, Timestamp
+from ...backends import DatabaseBackend
 
 try:
     from pymongo import MongoClient
     from pymongo.errors import PyMongoError
-    
-    class MongoDatabase:
-        """A MongoDB database interface for storing and retrieving data.
+
+    class MongoDatabase(DatabaseBackend):
+        """A MongoDB database implementing the full DatabaseBackend interface.
+
+        Key-value pairs are stored in a '_kv_store' collection.
+        Each table maps to a MongoDB collection.
 
         Args:
-            name (str, optional): Name of the database. Defaults to "testdb".
-            host (str, optional): MongoDB server host. Defaults to "localhost".
-            port (int, optional): MongoDB server port. Defaults to 27017.
-            collection (str, optional): Name of the collection. Defaults to "data".
-            auto_commit (bool, optional): Whether to auto commit changes. Defaults to True.
+            name: Database name.
+            host: MongoDB server host.
+            port: MongoDB server port.
+            collection: Default collection name for KV store.
+            auto_commit: Whether to auto-commit.
 
-        Raises:
-            ConnectionError: If connection to MongoDB fails.
+        Example:
+            db = MongoDatabase()
+            db.create_table("users", [Column("id", Integer()), Column("name", Text())])
+            db.insert("users", {"name": "Ali"})
+            results = db.query("users").filter(name="Ali").all()
         """
 
-        def __init__(self, name: str = "testdb", host: str = "localhost", port: int = 27017,
-                     collection: str = "data", auto_commit: bool = True):
-            """Initialize MongoDB connection"""
+        placeholder = ":ph"
+
+        def __init__(self, name="testdb", host="localhost", port=27017,
+                     collection="data", auto_commit=True, serialization="json"):
             self.name = name
             self.collection_name = collection
             self.auto_commit = auto_commit
+            self.serialization = serialization
+
             try:
                 self.client = MongoClient(host, port)
                 self.db = self.client[name]
-                self.collection = self.db[collection]
+                self._kv_collection = self.db["_kv_store"]
+                self._schema_collection = self.db["_schemas"]
             except PyMongoError as e:
-                raise ConnectionError(f"Failed to connect to MongoDB: {str(e)}")
+                raise DatabaseConnectionError(f"Failed to connect to MongoDB: {e}")
+
+        def _get_collection(self, table):
+            return self.db[table]
+
         
-        def read(self, key: str, default: Any = None) -> Any:
-            """Read a value from the database.
 
-            Args:
-                key (str): The key to read.
-                default (Any, optional): Default value if key not found. Defaults to None.
+        def create_table(self, name, columns):
+            if isinstance(columns, TableSchema):
+                schema = columns
+            else:
+                schema = TableSchema(name, columns)
 
-            Returns:
-                Any: The value associated with the key.
+            schema_doc = {
+                "_id": name,
+                "columns": [
+                    {
+                        "name": c.name,
+                        "type": type(c.col_type).__name__,
+                        "primary_key": c.primary_key,
+                        "nullable": c.nullable,
+                        "unique": c.unique,
+                        "default": c.default,
+                        "autoincrement": c.autoincrement,
+                    } for c in schema.columns
+                ]
+            }
+            self._schema_collection.replace_one(
+                {"_id": name}, schema_doc, upsert=True
+            )
 
-            Raises:
-                DatabaseError: If reading from MongoDB fails.
-            """
+            self.db.command("collStats", name)
+            return True
+
+        def drop_table(self, name, if_exists=True):
+            if not self.table_exists(name):
+                if not if_exists:
+                    raise DatabaseError(f"Table '{name}' does not exist")
+                return True
+            self._get_collection(name).drop()
+            self._schema_collection.delete_one({"_id": name})
+            return True
+
+        def table_exists(self, name):
+            collections = self.db.list_collection_names()
+            return name in collections and name not in ("_kv_store", "_schemas")
+
+        def get_tables(self):
+            collections = self.db.list_collection_names()
+            return [c for c in collections if c not in ("_kv_store", "_schemas")]
+
+        def get_schema(self, table_name):
+            doc = self._schema_collection.find_one({"_id": table_name})
+            if not doc:
+                raise DatabaseError(f"Table '{table_name}' does not exist")
+
+            from ...types import Integer, Text, Float, Boolean, Blob, Timestamp, Real, VARCHAR, JSON as JSONType, Pickle
+            type_map = {
+                "Integer": Integer, "Text": Text, "Float": Float, "Real": Real,
+                "Boolean": Boolean, "Blob": Blob, "Timestamp": Timestamp,
+                "VARCHAR": VARCHAR, "JSON": JSONType, "Pickle": Pickle,
+            }
+            columns = []
+            for col_data in doc["columns"]:
+                type_class = type_map.get(col_data["type"], Text)
+                col_type = type_class()
+                columns.append(Column(
+                    col_data["name"], col_type,
+                    primary_key=col_data.get("primary_key", False),
+                    nullable=col_data.get("nullable", True),
+                    unique=col_data.get("unique", False),
+                    default=col_data.get("default"),
+                    autoincrement=col_data.get("autoincrement", False),
+                ))
+            return TableSchema(table_name, columns)
+
+        
+
+        def insert(self, table, data):
+            schema = self._get_schema_or_raise(table)
+            validated = schema.validate_row(dict(data))
+
+            if schema.primary_key and schema.primary_key.autoincrement:
+                pk_name = schema.primary_key.name
+                if pk_name not in validated or validated[pk_name] is None:
+                    collection = self._get_collection(table)
+                    max_doc = collection.find_one(
+                        sort=[(pk_name, -1)]
+                    )
+                    max_id = max_doc.get(pk_name, 0) if max_doc else 0
+                    validated[pk_name] = max_id + 1
+
             try:
-                result = self.collection.find_one({"_id": key})
+                self._get_collection(table).replace_one(
+                    {"_sqb_id": validated.get(schema.primary_key.name)} if schema.primary_key
+                    else {"_sqb_data_hash": str(sorted(validated.items()))},
+                    {"_sqb_data": validated},
+                    upsert=True
+                )
+                return True
+            except PyMongoError as e:
+                raise DatabaseError(f"Failed to insert into '{table}': {e}")
+
+        def insert_many(self, table, data_list):
+            if not data_list:
+                return True
+            schema = self._get_schema_or_raise(table)
+            docs = []
+            for data in data_list:
+                validated = schema.validate_row(dict(data))
+                docs.append({"_sqb_data": validated})
+            try:
+                self._get_collection(table).insert_many(docs)
+                return True
+            except PyMongoError as e:
+                raise DatabaseError(f"Failed to bulk insert into '{table}': {e}")
+
+        def update(self, table, data, **filters):
+            schema = self._get_schema_or_raise(table)
+            collection = self._get_collection(table)
+            all_rows = [doc.get("_sqb_data", doc) for doc in collection.find({})]
+            query = InMemoryQuery(all_rows, schema).filter(**filters)
+            matching = query.all()
+
+            count = 0
+            for match in matching:
+                filter_query = {f"_sqb_data.{k}": v for k, v in match.items()}
+                update_data = {f"_sqb_data.{k}": v for k, v in data.items()}
+                result = collection.update_one(filter_query, {"$set": update_data})
+                count += result.modified_count
+            return count
+
+        def delete(self, table, **filters):
+            schema = self._get_schema_or_raise(table)
+            collection = self._get_collection(table)
+            all_rows = [doc.get("_sqb_data", doc) for doc in collection.find({})]
+
+            if not filters:
+                result = collection.delete_many({})
+                return result.deleted_count
+
+            query = InMemoryQuery(all_rows, schema).filter(**filters)
+            matching = query.all()
+
+            count = 0
+            for match in matching:
+                filter_query = {f"_sqb_data.{k}": v for k, v in match.items()}
+                result = collection.delete_one(filter_query)
+                count += result.deleted_count
+            return count
+
+        def query(self, table):
+            schema = self._get_schema_or_raise(table)
+            collection = self._get_collection(table)
+            rows = [doc.get("_sqb_data", doc) for doc in collection.find({})]
+            return InMemoryQuery(rows, schema)
+
+        def execute(self, sql, params=None, fetch=False):
+            raise NotImplementedError(
+                "Raw SQL execution is not supported by MongoDatabase. "
+                "Use query() for in-memory querying instead."
+            )
+
+        def count(self, table, **filters):
+            q = self.query(table)
+            if filters:
+                q = q.filter(**filters)
+            return q.count()
+
+        
+
+        def write(self, key, value, commit=None):
+            try:
+                self._kv_collection.replace_one(
+                    {"_id": key},
+                    {"_id": key, "value": value, "created_at": datetime.now().isoformat()},
+                    upsert=True
+                )
+                return True
+            except PyMongoError as e:
+                raise DatabaseError(f"Failed to write key '{key}': {e}")
+
+        def read(self, key, default=None):
+            try:
+                result = self._kv_collection.find_one({"_id": key})
                 return result["value"] if result else default
             except PyMongoError as e:
-                raise DatabaseError(f"Failed to read from MongoDB: {str(e)}")
-        
-        def write(self, key: str, value: Any, commit: bool = None) -> bool:
-            """Write a key-value pair to the database.
+                raise DatabaseError(f"Failed to read key '{key}': {e}")
 
-            Args:
-                key (str): The key to write.
-                value (Any): The value to store.
-                commit (bool, optional): Whether to commit the change. Defaults to None.
-
-            Returns:
-                bool: True if write successful.
-
-            Raises:
-                DatabaseError: If writing to MongoDB fails.
-            """
+        def delete_key(self, key, commit=None):
             try:
-                doc = {
-                    "_id": key,
-                    "value": value,
-                    "created_at": datetime.now().isoformat()
-                }
-                self.collection.replace_one({"_id": key}, doc, upsert=True)
+                self._kv_collection.delete_one({"_id": key})
                 return True
             except PyMongoError as e:
-                raise DatabaseError(f"Failed to write to MongoDB: {str(e)}")
-        
-        def keys(self, pattern: str = None) -> List[str]:
-            """Get all keys in the database matching a pattern.
+                raise DatabaseError(f"Failed to delete key '{key}': {e}")
 
-            Args:
-                pattern (str, optional): Regex pattern to match keys. Defaults to None.
-
-            Returns:
-                List[str]: List of matching keys.
-
-            Raises:
-                DatabaseError: If fetching keys fails.
-            """
+        def keys(self, pattern=None):
             try:
                 if pattern:
-                    cursor = self.collection.find({"_id": {"$regex": pattern}}, {"_id": 1})
+                    cursor = self._kv_collection.find(
+                        {"_id": {"$regex": pattern}}, {"_id": 1}
+                    )
                 else:
-                    cursor = self.collection.find({}, {"_id": 1})
+                    cursor = self._kv_collection.find({}, {"_id": 1})
                 return [doc["_id"] for doc in cursor]
             except PyMongoError as e:
-                raise DatabaseError(f"Failed to fetch keys: {str(e)}")
-        
-        def delete_key(self, key: str, commit: bool = None) -> bool:
-            """Delete a key from the database.
+                raise DatabaseError(f"Failed to fetch keys: {e}")
 
-            Args:
-                key (str): The key to delete.
-                commit (bool, optional): Whether to commit the change. Defaults to None.
-
-            Returns:
-                bool: True if deletion successful.
-
-            Raises:
-                DatabaseError: If deleting key fails.
-            """
+        def exists(self, key):
             try:
-                self.collection.delete_one({"_id": key})
+                return self._kv_collection.find_one({"_id": key}) is not None
+            except PyMongoError as e:
+                raise DatabaseError(f"Failed to check key existence: {e}")
+
+        def get_size(self):
+            try:
+                return self._kv_collection.count_documents({})
+            except PyMongoError as e:
+                raise DatabaseError(f"Failed to get size: {e}")
+
+        def delete_database(self, commit=None):
+            try:
+                self._kv_collection.delete_many({})
+                for table in self.get_tables():
+                    self._get_collection(table).drop()
+                self._schema_collection.delete_many({})
                 return True
             except PyMongoError as e:
-                raise DatabaseError(f"Failed to delete key: {str(e)}")
+                raise DatabaseError(f"Failed to delete database: {e}")
+
         
-        def delete_database(self, commit: bool = None) -> bool:
-            """Delete all data from the database.
 
-            Args:
-                commit (bool, optional): Whether to commit the change. Defaults to None.
-
-            Returns:
-                bool: True if deletion successful.
-
-            Raises:
-                DatabaseError: If deleting database fails.
-            """
-            try:
-                self.collection.delete_many({})
-                return True
-            except PyMongoError as e:
-                raise DatabaseError(f"Failed to delete database: {str(e)}")
-        
-        def close(self) -> None:
-            """Close the database connection.
-
-            Raises:
-                ConnectionError: If closing connection fails.
-            """
+        def close(self):
             try:
                 self.client.close()
             except PyMongoError as e:
-                raise ConnectionError(f"Failed to close MongoDB connection: {str(e)}")
-        
-        def get_size(self) -> int:
-            """Get the number of documents in the database.
+                raise DatabaseConnectionError(f"Failed to close connection: {e}")
 
-            Returns:
-                int: Number of documents.
-
-            Raises:
-                DatabaseError: If getting size fails.
-            """
+        def _get_schema_or_raise(self, table_name):
             try:
-                return self.collection.count_documents({})
-            except PyMongoError as e:
-                raise DatabaseError(f"Failed to get database size: {str(e)}")
-        
-        def exists(self, key: str) -> bool:
-            """Check if a key exists in the database.
+                return self.get_schema(table_name)
+            except DatabaseError:
+                raise DatabaseError(f"Table '{table_name}' does not exist")
 
-            Args:
-                key (str): The key to check.
-
-            Returns:
-                bool: True if key exists, False otherwise.
-
-            Raises:
-                DatabaseError: If checking existence fails.
-            """
-            try:
-                return bool(self.collection.find_one({"_id": key}))
-            except PyMongoError as e:
-                raise DatabaseError(f"Failed to check key existence: {str(e)}")
+        def __repr__(self):
+            return f"MongoDatabase(name={self.name!r})"
 
 except ImportError:
     class MongoDatabase:
-        """Fallback class when PyMongo is not installed."""
         def __init__(self, *args, **kwargs):
             raise ImportError("PyMongo library not installed. Install with: pip install pymongo")

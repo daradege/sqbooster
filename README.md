@@ -4,104 +4,174 @@
 [![Python Version](https://img.shields.io/pypi/pyversions/sqbooster.svg)](https://pypi.org/project/sqbooster/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Python library that provides a flexible and easy-to-use interface for working with various databases, including SQLite, JSON, Pickle, Redis, MongoDB, and PostgreSQL.
+A flexible Python library for database access with real typed tables, a chainable query builder, and easy backend switching.
 
 ## Features
 
-- **Multiple Database Support:** Work with SQLite, JSON files, Pickle files, Redis, MongoDB, and PostgreSQL
-- **Consistent API:** Same interface across all database types
-- **Automatic Serialization:** Built-in JSON serialization/deserialization for complex data types
-- **Lightweight:** Minimal dependencies for core functionality
-- **Optional Integrations:** Support for popular databases like Redis and MongoDB
-- **Type Safety:** Python type hints for better IDE support
-- **Error Handling:** Robust error handling and informative exceptions
+- **6 backends, same API** - SQLite, PostgreSQL, JSON files, Pickle files, Redis, MongoDB
+- **Real typed tables** - `Integer`, `Text`, `Float`, `Boolean`, `Blob`, `JSON`, and more
+- **Chainable query builder** - filter, order, select, paginate, chain
+- **Django-style filter operators** - `__gt`, `__lt`, `__contains`, `__in`, `__like`, and more
+- **Pickle serialization** - `serialization="pickle"` at the backend level
+- **Key-value API** - the v1 key-value interface still works for simple use cases
+- **Zero config** - SQLite in-memory is the default
 
 ## Installation
 
 ```bash
 pip install sqbooster
+
+# Optional backends
+pip install sqbooster[postgresql]   # PostgreSQL support
+pip install sqbooster[redis]        # Redis support
+pip install sqbooster[mongodb]      # MongoDB support
+pip install sqbooster[all]          # Everything
 ```
 
 ## Quick Start
 
 ```python
-from sqbooster.databases import SQLiteDatabase, JSONFileDatabase, PickleFileDatabase
+import sqbooster
 
-# SQLite Example
-db_sqlite = SQLiteDatabase("test.db")
-db_sqlite.write("key1", {"name": "test", "value": 123})
-print("SQLite:", db_sqlite.read("key1"))
+# One line to get a database
+db = sqbooster.sqlite()
 
-# JSON File Example
-db_json = JSONFileDatabase("test.json")
-db_json.write("key1", {"name": "test", "value": 123})
-print("JSON File:", db_json.read("key1"))
+# Tables are created automatically from the data you insert
+db.add("users", {"name": "Alice", "email": "alice@example.com", "age": 30})
+db.add("users", {"name": "Bob", "email": "bob@example.com", "age": 25})
 
-# Pickle File Example
-db_pickle = PickleFileDatabase("test.pkl")
-db_pickle.write("key1", {"name": "test", "value": 123})
-print("Pickle File:", db_pickle.read("key1"))
+# Query with filter operators
+active_users = db.find("users", age__gte=18, order_by="name")
+
+# Chained filters
+rich_active = db.find("users", age__gte=18, order_by="-age", limit=10)
+
+# Get a single row
+alice = db.get("users", name="Alice")
+
+# Update and delete
+db.update("users", {"age": 31}, name="Alice")
+db.remove("users", name="Bob")
 ```
 
-## Advanced Usage
+## Switching Backends
 
-### Redis Integration
+Switch between backends by changing only the constructor:
 
 ```python
-from sqbooster.databases import RedisDatabase
+import sqbooster
 
-try:
-    db_redis = RedisDatabase()
-    db_redis.write("key1", {"name": "test", "value": 123})
-    print("Redis:", db_redis.read("key1"))
-except ImportError:
-    print("Redis not available")
+# SQLite
+db = sqbooster.sqlite("myapp.db")
+
+# JSON file
+db = sqbooster.json("data.json")
+
+# PostgreSQL (requires sqbooster[postgresql])
+db = sqbooster.postgresql(host="localhost", name="mydb", user="me")
+
+# Everything else stays the same
+db.add("users", {"name": "Alice", "age": 30})
+db.find("users", age__gte=18)
 ```
 
-### MongoDB Integration
+## Explicit Table Definitions
+
+When you need constraints like `unique`, `nullable=False`, or custom defaults:
 
 ```python
-from sqbooster.databases import MongoDatabase
+from sqbooster.schema import Column
+from sqbooster.types import Integer, Text, Float, Boolean
 
-try:
-    db_mongo = MongoDatabase()
-    db_mongo.write("key1", {"name": "test", "value": 123})
-    print("MongoDB:", db_mongo.read("key1"))
-except ImportError:
-    print("MongoDB not available")
+db.create_table("products", [
+    Column("id", Integer(), primary_key=True, autoincrement=True),
+    Column("name", Text(), nullable=False),
+    Column("sku", Text(), unique=True, nullable=False),
+    Column("price", Float(), nullable=False),
+    Column("stock", Integer(), default=0),
+    Column("active", Boolean(), default=True),
+])
+
+db.insert("products", {"name": "Widget", "sku": "W-001", "price": 9.99})
 ```
 
-### PostgreSQL Integration
+## Query Builder
 
 ```python
-from sqbooster.databases import PostgreSQLDatabase
+results = (db.query("users")
+    .filter(age__gte=18, name__contains="a")
+    .order_by("-age")
+    .limit(10)
+    .offset(0)
+    .all())
 
-try:
-    db_postgres = PostgreSQLDatabase()
-    db_postgres.write("key1", {"name": "test", "value": 123})
-    print("PostgreSQL:", db_postgres.read("key1"))
-except ImportError:
-    print("PostgreSQL not available")
+count = db.query("users").filter(active=True).count()
+first = db.query("users").filter(name="Alice").first()
 ```
+
+## Key-Value API
+
+```python
+db = sqbooster.sqlite()
+
+db.write("config:theme", {"dark": True, "font_size": 14})
+print(db.read("config:theme"))
+
+for key in db.keys("config:"):
+    print(key, db.read(key))
+```
+
+## Pickle Serialization
+
+```python
+db = sqbooster.sqlite(serialization="pickle")
+
+db.write("cache:results", [1, 2, {"nested": True}])
+data = db.read("cache:results")
+```
+
+## Documentation
+
+Full documentation: **https://sqbooster.github.io/sqbooster/**
 
 ## API Reference
 
-All database classes implement the following core methods:
+### SimpleClient Methods
 
-- `write(key, value)`: Store a value with the given key
-- `read(key)`: Retrieve a value by key
-- `delete(key)`: Remove a key-value pair
-- `exists(key)`: Check if a key exists
-- `clear()`: Remove all key-value pairs
+| Method | Description |
+|---|---|
+| `add(table, data)` | Insert one or more rows (auto-creates table) |
+| `get(table, **filters)` | Get a single row |
+| `find(table, **filters)` | Find rows matching filters |
+| `update(table, data, **filters)` | Update rows |
+| `remove(table, **filters)` | Delete rows |
+| `count(table, **filters)` | Count rows |
+| `exists(table, **filters)` | Check if rows exist |
+| `define(table, columns)` | Explicitly define a table |
+
+### Filter Operators
+
+| Operator | Meaning |
+|---|---|
+| `__gt` / `__lt` | Greater/less than |
+| `__gte` / `__lte` | Greater/less than or equal |
+| `__ne` | Not equal |
+| `__contains` | LIKE `%value%` |
+| `__startswith` | LIKE `value%` |
+| `__endswith` | LIKE `%value` |
+| `__like` | Raw LIKE pattern |
+| `__in` | Value in list |
+| `__notin` | Value not in list |
+| `__isnull` | IS NULL / IS NOT NULL |
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License - see [LICENSE](LICENSE).
 
 ## Author
 
-Ali Safamanesh (darg.q.a.a@gmail.com)
+Ali Safamanesh (daradege@proton.me)

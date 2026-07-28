@@ -1,10 +1,10 @@
 [project]
 name = "sqbooster"
-version = "1.0.0"
+version = "2.0.0"
 authors = [
-    { name = "Ali Safamanesh", email = "darg.q.a.a@gmail.com" }
+    { name = "Ali Safamanesh", email = "daradege@proton.me" }
 ]
-description = "A python library that allows you to work with sql easily"
+description = "A flexible Python library for database access with real tables, easy querying, and seamless backend switching"
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
@@ -13,6 +13,21 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 license = { file = "LICENSE" }
+
+[project.optional-dependencies]
+postgresql = ["psycopg2-binary>=2.8"]
+redis = ["redis>=4.0"]
+mongodb = ["pymongo>=4.0"]
+all = ["psycopg2-binary>=2.8", "redis>=4.0", "pymongo>=4.0"]
+docs = ["sphinx>=7.0", "furo", "sphinx-autodoc-typehints"]
+dev = [
+    "sphinx>=7.0",
+    "furo",
+    "sphinx-autodoc-typehints",
+    "psycopg2-binary>=2.8",
+    "redis>=4.0",
+    "pymongo>=4.0",
+]
 
 [build-system]
 requires = ["hatchling"]
