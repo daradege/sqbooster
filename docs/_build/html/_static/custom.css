@@ -1,0 +1,31 @@
+"""Custom CSS for sqbooster docs."""
+
+:root {
+    --color-brand-primary: #2563eb;
+    --color-brand-content: #2563eb;
+}
+
+.sidebar-brand-text {
+    font-weight: 700;
+}
+
+code.literal {
+    background-color: #f0f4ff;
+    padding: 0.1em 0.3em;
+    border-radius: 4px;
+}
+
+div.highlight {
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+
+table.docutils {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+table.docutils th {
+    background-color: #f8fafc;
+    font-weight: 600;
+}
