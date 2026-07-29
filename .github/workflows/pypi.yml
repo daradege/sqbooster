@@ -1,6 +1,4 @@
 name: Publish to PyPI
-
-name: push on pypi per release
 on:
   release:
     types:
